@@ -31,13 +31,13 @@ Channel 1 — controls
   CC8   Orientation Y
   CC9   Orientation Z
 
-Channel 2 — touchpad finger 0
-  Note on/off   pitch  = touch x (0.0…1.0 → MIDI note 0…127)
-                velocity = touch y (0.0…1.0 → 0…127)
-  Gate: note-on when finger touches, note-off when lifted
-
-Channel 3 — touchpad finger 1
-  Same as channel 2
+Channel 1 (continued) — touchpad
+  CC10  finger 0 gate      (0 = lifted, 127 = touching)
+  CC11  finger 0 pitch     (touch x → 0…127)
+  CC12  finger 0 velocity  (touch y → 0…127)
+  CC13  finger 1 gate      (0 = lifted, 127 = touching)
+  CC14  finger 1 pitch     (touch x → 0…127)
+  CC15  finger 1 velocity  (touch y → 0…127)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OSC output  (→ --host:--port)  — unchanged from ds4_osc.py
@@ -116,7 +116,7 @@ _BUTTON_NAMES = [
 ]
 _N = len(_BUTTON_NAMES)  # 18
 BUTTON_MIDI_VALUE = {
-    name: round(i * 127 / (_N - 1))
+    name: round((i+1) * 127 / (_N - 1))
     for i, name in enumerate(_BUTTON_NAMES)
 }
 # e.g. cross=0, circle=7, …, dpad_right=127
@@ -288,7 +288,7 @@ class DS4Bridge:
 
         # MIDI virtual output port
         self._midi = None
-        self._touch_notes = [None, None]   # currently sounding note per finger
+        self._touch_last_active = [False, False]  # previous active state per finger
         if MIDI_AVAILABLE:
             try:
                 self._midi = mido.open_output(midi_port_name, virtual=True)
@@ -438,23 +438,22 @@ class DS4Bridge:
         cc(MIDI_CH1, 8, orientation_to_midi(oy))
         cc(MIDI_CH1, 9, orientation_to_midi(oz))
 
-        # ── Channels 2-3: touchpad fingers ────────────────────────────────────
+        # ── Touchpad fingers — all on Channel 1, CC10-15 ─────────────────────────
+        # Finger 0: CC10 gate, CC11 pitch, CC12 velocity
+        # Finger 1: CC13 gate, CC14 pitch, CC15 velocity
+        # Using CCs avoids hanging notes caused by dropped note-off messages.
         for i, t in enumerate(s['touches']):
-            ch = MIDI_CH2 + i          # finger 0 → ch 1 (0-indexed), finger 1 → ch 2
-            prev_note = self._touch_notes[i]
+            base = 10 + i * 3   # finger 0 → 10,11,12 / finger 1 → 13,14,15
+            prev_active = self._touch_last_active[i]
             if t['active']:
-                note = int(clamp(round(t['x'] * 127), 0, 127))
-                vel  = int(clamp(round(t['y'] * 127), 1, 127))  # vel 0 = note-off
-                if prev_note is not None and prev_note != note:
-                    # Finger slid to a new pitch — release old note first
-                    m(mido.Message('note_off', channel=ch, note=prev_note, velocity=0))
-                if prev_note != note:
-                    m(mido.Message('note_on', channel=ch, note=note, velocity=vel))
-                    self._touch_notes[i] = note
+                cc(MIDI_CH1, base,     127)                                       # gate on
+                cc(MIDI_CH1, base + 1, int(clamp(round(t['x'] * 127), 0, 127)))  # pitch
+                cc(MIDI_CH1, base + 2, int(clamp(round(t['y'] * 127), 0, 127)))  # velocity
+                self._touch_last_active[i] = True
             else:
-                if prev_note is not None:
-                    m(mido.Message('note_off', channel=ch, note=prev_note, velocity=0))
-                    self._touch_notes[i] = None
+                if prev_active:
+                    cc(MIDI_CH1, base, 0)   # gate off — only send once on transition
+                self._touch_last_active[i] = False
 
     def run(self):
         self._running = True
